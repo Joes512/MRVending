@@ -1,0 +1,16 @@
+../Core/Src/main.c:90:12:transport_open	1
+../Core/Src/main.c:96:12:transport_close	1
+../Core/Src/main.c:101:15:transport_write	2
+../Core/Src/main.c:112:15:transport_read	2
+../Core/Src/main.c:130:5:main	1
+../Core/Src/main.c:215:6:SystemClock_Config	3
+../Core/Src/main.c:261:13:MX_I2C1_Init	2
+../Core/Src/main.c:295:13:MX_I2S3_Init	2
+../Core/Src/main.c:329:13:MX_SPI1_Init	2
+../Core/Src/main.c:367:13:MX_USART2_UART_Init	2
+../Core/Src/main.c:398:13:MX_DMA_Init	1
+../Core/Src/main.c:419:13:MX_GPIO_Init	1
+../Core/Src/main.c:522:6:timer_callback	1
+../Core/Src/main.c:532:6:StartDefaultTask	7
+../Core/Src/main.c:593:6:HAL_TIM_PeriodElapsedCallback	2
+../Core/Src/main.c:610:6:Error_Handler	1
