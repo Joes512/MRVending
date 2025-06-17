@@ -32,9 +32,11 @@
 #include <rmw_microros/rmw_microros.h>
 
 #include <std_msgs/msg/int32.h>
+#include <std_msgs/msg/empty.h>
 
 #include"FreeRTOS.h"
 #include"task.h"
+#include "semphr.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -104,6 +106,7 @@ int fputc(int ch, FILE *f)
 }
 #endif
 
+volatile bool lcd_need_refresh = false;
 BaseType_t xReturned;
 TaskHandle_t xcoinHandle=NULL;
 TaskHandle_t xpulseHandle=NULL;
@@ -117,9 +120,12 @@ int total=0;
 int day=1;
 int now=0;
 char MonitorTset[100];
+SemaphoreHandle_t i2cMutex;
 
 void lcd_send_cmd(char cmd)
 {
+//	xSemaphoreTake(i2cMutex, portMAX_DELAY);
+
 	char data_h,data_l;
 	uint8_t frame_data[4];
 	data_h = (cmd&0xf0);
@@ -132,6 +138,7 @@ void lcd_send_cmd(char cmd)
 	HAL_I2C_Master_Transmit(&hi2c1,LCD_ADDRESS,(uint8_t *)frame_data,4,0x100);
 
 	//HAL_Delay(1);
+//	xSemaphoreGive(i2cMutex);
 }
 
 void lcd_send_data(char data)
@@ -222,6 +229,16 @@ void COIN_Task() {
 	memset(MonitorTset,'\0',sizeof(MonitorTset));
 	I2C_Scan(&hi2c1);
 	for (;;) {
+
+	 if (lcd_need_refresh) {
+			lcd_need_refresh = false;
+			lcd_clear();
+			lcd_put_cur(0, 0);
+			lcd_send_string("Money reset!");
+			lcd_put_cur(1, 0);
+			lcd_send_string("Total = 0");
+		}
+
 	  i = i + 1;
 
 	  if (i >= 5 && impulse == 1){ // 10 dollar
@@ -315,6 +332,17 @@ void COIN_Task() {
 //	}
 //}
 
+void reset_callback(const void * msgin)
+{
+  (void) msgin;
+  total = 0;
+  now   = 0;
+  day   = 1;
+//  i = 0;
+  lcd_need_refresh = true;
+  printf("Received /money_reset, total reset to 0.\n");
+}
+
 /* USER CODE END 0 */
 
 /**
@@ -352,31 +380,27 @@ int main(void)
   MX_SPI1_Init();
   MX_USART2_UART_Init();
   /* USER CODE BEGIN 2 */
-  for (int i = 0; i < 10; i++) {
-  	    char msg[32];
-  	    sprintf(msg, "Count: %d\r\n", i);
-  	    HAL_UART_Transmit(&huart2, (uint8_t*)msg, strlen(msg), HAL_MAX_DELAY);
-  	  HAL_Delay(1000);
-  	}
+//  for (int i = 0; i < 10; i++) {
+//  	    char msg[32];
+//  	    sprintf(msg, "Count: %d\r\n", i);
+//  	    HAL_UART_Transmit(&huart2, (uint8_t*)msg, strlen(msg), HAL_MAX_DELAY);
+//  	  HAL_Delay(1000);
+//  	}
 
   HAL_Delay(30);
   lcd_Init();
 
-  xTaskCreate(
-		  COIN_Task,
-		  "COIN_Task",
-		  128,
-		  NULL,
-		  1,
-		  &xcoinHandle);
+  const osThreadAttr_t coinTask_attributes = {
+    .name = "COIN_Task",
+    .priority = osPriorityNormal,
+    .stack_size = 128 * 4
+  };
 
-  xTaskCreate(
-		  incomingImpulse,
-  		  "Impulse",
-  		  128,
-  		  NULL,
-  		  1,
-  		  &xpulseHandle);
+  const osThreadAttr_t impulseTask_attributes = {
+    .name = "Impulse",
+    .priority = osPriorityNormal,
+    .stack_size = 128 * 4
+  };
 
 //  vTaskStartScheduler();
   /* USER CODE END 2 */
@@ -403,6 +427,8 @@ int main(void)
   /* Create the thread(s) */
   /* creation of defaultTask */
   defaultTaskHandle = osThreadNew(StartDefaultTask, NULL, &defaultTask_attributes);
+  osThreadNew(COIN_Task, NULL, &coinTask_attributes);
+  osThreadNew(incomingImpulse, NULL, &impulseTask_attributes);
 
   /* USER CODE BEGIN RTOS_THREADS */
   /* add threads, ... */
@@ -732,75 +758,75 @@ void * microros_zero_allocate(size_t number_of_elements, size_t size_of_element,
   * @retval None
   */
 /* USER CODE END Header_StartDefaultTask */
+
+
 void StartDefaultTask(void *argument)
 {
-//	uint8_t hello[] = "HELLO_AGENT\r\n";
-//	HAL_UART_Transmit(&huart2, hello, sizeof(hello)-1, HAL_MAX_DELAY);
-	HAL_Delay(3000);
-  /* init code for USB_HOST */
-  MX_USB_HOST_Init();
-  /* USER CODE BEGIN 5 */
+    /*---------------- 0. 讓 USB Host 與系統先穩定 ----------------*/
+    MX_USB_HOST_Init();      // 若無用到可註解
+    HAL_Delay(3000);
 
-    // micro-ROS configuration
-
+    /*---------------- 1. 設定 UART custom transport --------------*/
     rmw_uros_set_custom_transport(
-      true,
-      (void *) &huart2,
-      cubemx_transport_open,
-      cubemx_transport_close,
-      cubemx_transport_write,
-      cubemx_transport_read);
+        true,
+        (void*)&huart2,
+        cubemx_transport_open,
+        cubemx_transport_close,
+        cubemx_transport_write,
+        cubemx_transport_read);
 
+    /*---------------- 2. (可選) 換成 FreeRTOS 記憶體配置 ----------*/
     rcl_allocator_t freeRTOS_allocator = rcutils_get_zero_initialized_allocator();
-    freeRTOS_allocator.allocate = microros_allocate;
-    freeRTOS_allocator.deallocate = microros_deallocate;
-    freeRTOS_allocator.reallocate = microros_reallocate;
-    freeRTOS_allocator.zero_allocate =  microros_zero_allocate;
+    freeRTOS_allocator.allocate      = microros_allocate;
+    freeRTOS_allocator.deallocate    = microros_deallocate;
+    freeRTOS_allocator.reallocate    = microros_reallocate;
+    freeRTOS_allocator.zero_allocate = microros_zero_allocate;
+    rcutils_set_default_allocator(&freeRTOS_allocator);
 
-    if (!rcutils_set_default_allocator(&freeRTOS_allocator)) {
-        printf("Error on default allocators (line %d)\n", __LINE__);
-    }
-
-    // micro-ROS app
-
-    rcl_publisher_t publisher;
-    std_msgs__msg__Int32 msg;
-    rclc_support_t support;
-    rcl_allocator_t allocator;
-    rcl_node_t node;
-    rcl_ret_t ret;
-
-    allocator = rcl_get_default_allocator();
-
-    //create init_options
+    /*---------------- 3. 建立 support (內含 DDS session) ----------*/
+    rcl_allocator_t allocator = rcl_get_default_allocator();
+    rclc_support_t  support;
     rclc_support_init(&support, 0, NULL, &allocator);
 
-    // create node
+    /*---------------- 4. 建立節點 / 發布者 / 訂閱者 ---------------*/
+    rcl_node_t node;
     rclc_node_init_default(&node, "cubemx_node", "", &support);
 
-    // create publisher
-    ret = rclc_publisher_init_default(
-      &publisher,
-      &node,
-      ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Int32),
-      "cubemx_publisher");
-    printf("pub_init: %d\n", ret);
+    /* publisher : /money_count */
+    rcl_publisher_t publisher;
+    rclc_publisher_init_default(
+        &publisher, &node,
+        ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Int32),
+        "money_count");
 
-    printf("Publisher created\n");
-    msg.data = 0;
+    /* subscriber : /money_reset */
+    rcl_subscription_t subscriber;
+    std_msgs__msg__Empty reset_msg;   // 資料緩衝區
+    std_msgs__msg__Empty__init(&reset_msg);
+    rclc_subscription_init_default(
+        &subscriber, &node,
+        ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Empty),
+        "money_reset");
 
-    for(;;)
+    /*---------------- 5. 建立 executor 並加入訂閱 -----------------*/
+    rclc_executor_t executor;
+    rclc_executor_init(&executor, &support.context, 2, &allocator);
+    rclc_executor_add_subscription(
+        &executor, &subscriber,
+        &reset_msg, &reset_callback, ON_NEW_DATA);
+
+    /*---------------- 6. 主迴圈：送累積金額 + spin ----------------*/
+    std_msgs__msg__Int32 msg;
+    for (;;)
     {
-      ret = rcl_publish(&publisher, &msg, NULL);
-      if (ret != RCL_RET_OK)
-      {
-//        printf("Error publishing \n");
-      }
+        msg.data = total;                        // 發布目前總額
+        rcl_publish(&publisher, &msg, NULL);
 
-      msg.data++;
-      osDelay(10);
+        rclc_executor_spin_some(&executor,
+                                RCL_MS_TO_NS(5)); // 處理 /money_reset
+
+        osDelay(10);                             // 10 ms 週期
     }
-  /* USER CODE END 5 */
 }
 
 /**
